@@ -38,6 +38,7 @@ import signal
 import time
 import sys
 import base64
+import time
 
 if sys.version[0] == '2':
     import Queue as queue
@@ -138,7 +139,7 @@ class Arlo(object):
             'dateCreated': 1545374127585,
             'mailProgramChecked': True
         }
-        
+
         """
 
         self.username = username
@@ -153,27 +154,25 @@ class Arlo(object):
 
         # Check if 2FA enabled
         if body["mfa"]:
-        
+
             # Get a list of all valid two factors
             body = self.request.get('https://ocapi-app.arlo.com/api/getFactors?data%20=%20'+str(body['authenticated']), {}, self.createHeaders(token_base64))
             twofactors_list = body['items']
-    
+
             # Get the two factor ID for SMS
-            twofactor_id = list(filter(lambda twofactors_list: twofactors_list['factorType'] == 'SMS', twofactors_list))[0]['factorId']
+            twofactor_id = list(filter(lambda twofactors_list: twofactors_list['factorType'] == 'PUSH', twofactors_list))[0]['factorId']
 
             # Get the SMS with the 2nd factor
             body = self.request.post('https://ocapi-app.arlo.com/api/startAuth', {"factorId" : twofactor_id}, self.createHeaders(token_base64))
 
-            # Wait for keyboard input of the secod factor value (this is just sample code!)
-            otp = input("OTP? ")
-
             # Finish 2FA and get new authorization token
-            body = self.request.post('https://ocapi-app.arlo.com/api/finishAuth', {"factorAuthCode" : body['factorAuthCode'], "otp" : otp }, self.createHeaders(token_base64))
+            body = self.FinishAuth(body['factorAuthCode'], token_base64)
+
             token = body['token']
             token_base64 = str(base64.b64encode(token.encode("utf-8")), "utf-8")
 
         # Verifiy authorization token
-        body = self.request.get('https://ocapi-app.arlo.com/api/validateAccessToken?data = {}'.format(int(time.time())), {}, self.createHeaders(token_base64))
+        self.request.get('https://ocapi-app.arlo.com/api/validateAccessToken?data = {}'.format(int(time.time())), {}, self.createHeaders(token_base64))
 
         # Open session
         body = self.request.get('https://my.arlo.com/hmsweb/users/session/v2', {}, self.createHeaders(token))
@@ -183,6 +182,17 @@ class Arlo(object):
         self.headers = self.createHeaders(token)
 
         return body
+
+    def FinishAuth(self, factor_auth_code, token_base64, retry_count = 0):
+        try:
+            return self.request.post('https://ocapi-app.arlo.com/api/finishAuth', {"factorAuthCode" : factor_auth_code }, self.createHeaders(token_base64))
+        except Exception as e:
+            if retry_count < 10:
+                print("Could not authenticate yet, sleeping for 3 seconds")
+                time.sleep(3)
+                return self.FinishAuth(factor_auth_code, token_base64, retry_count + 1)
+            else:
+                raise e
 
     def Logout(self):
         event_streams = self.event_streams.copy()
@@ -643,7 +653,7 @@ class Arlo(object):
 
     def UnPauseTrack(self, basestation):
         return self.Notify(basestation, {"action":"play","resource":"audioPlayback/player"})
-   
+
     def SkipTrack(self, basestation):
         return self.Notify(basestation, {"action":"nextTrack","resource":"audioPlayback/player"})
 
@@ -877,7 +887,7 @@ class Arlo(object):
         """
         This method returns an array that contains the basestation, cameras, etc. and their metadata.
         If you pass in a valid device type, as a string or a list, this method will return an array of just those devices that match that type. An example would be ['basestation', 'camera']
-        To filter provisioned or unprovisioned devices pass in a True/False value for filter_provisioned. By default both types are returned. 
+        To filter provisioned or unprovisioned devices pass in a True/False value for filter_provisioned. By default both types are returned.
         """
         devices = self.request.get('https://my.arlo.com/hmsweb/users/devices',{},self.headers)
         if device_type:
@@ -888,7 +898,7 @@ class Arlo(object):
                 devices = [ device for device in devices if device.get("state") == 'provisioned']
             else:
                 devices = [ device for device in devices if device.get("state") != 'provisioned']
-                
+
         return devices
 
     def GetDeviceSupport(self):
@@ -1489,7 +1499,9 @@ class Arlo(object):
 
         def callback(self, event):
             if event.get("from") == basestation.get("deviceId") and event.get("resource") == "cameras/"+camera.get("deviceId") and event.get("properties", {}).get("activityState") == "userStreamActive":
-                return nl.stream_url_dict['url'].replace("rtsp://", "rtsps://")
+                original_url = nl.stream_url_dict['url']
+                print(original_url)
+                return original_url.replace("https://", "rtsps://").replace("80", "443").replace("/stream", "/vzmodulelive").replace(".mpd", "")
 
             return None
 
